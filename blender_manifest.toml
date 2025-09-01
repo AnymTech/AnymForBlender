@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+version = "1.0.0"
+
+blender_version_min = "4.5.0"
+id = "Anym_for_Blender"
+license = [
+	"SPDX:GPL-3.0-or-later",
+]
+maintainer = "Wolf Gautier wolf@anym.tech"
+name = "Anym for Blender"
+tagline = "Anym: humanoid super-inbetweening"
+type = "add-on"
+website = "https://www.anym.tech/"
+
+tags = ["Animation"]
