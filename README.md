@@ -75,6 +75,6 @@ For technical support, API access, or general questions, contact **hello@anym.te
 
 ## Requirements
 
-- Blender (compatible versions)
+- Blender (4.5.1 and up)
 - Active internet connection
 - Valid Anym API key
