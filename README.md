@@ -21,7 +21,7 @@ The plugin is now installed, and an Anym tab will be available in the side bar o
 
 ### Video Tutorial
 
-For a visual guide on using the plugin, check out our [Blender plugin tutorial]([https://youtu.be/u41JQDjHmN4](https://www.youtube.com/watch?v=ed7KbV3OVhk) which demonstrates the total workflow for obtaining a first animation.
+For a visual guide on using the plugin, check out our [Blender plugin tutorial]([https://youtu.be/u41JQDjHmN4](https://www.youtube.com/watch?v=ed7KbV3OVhk)) which demonstrates the total workflow for obtaining a first animation.
 
 ### Step-by-Step Workflow
 
