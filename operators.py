@@ -97,7 +97,7 @@ class ANYM_OT_import_armature(bpy.types.Operator):
 		pose_data = ANYM_POSES[pose]
 
 		armature_object, name = import_pose(
-			pose_data,
+			'Frames: 1\nFrame Time: 0.050000\n' + pose_data,
 			name=pose.lower(),
 			fkik_enabled=fkik_enabled,
 			import_model=import_model,
@@ -353,6 +353,7 @@ class ANYM_OT_generate_animation(bpy.types.Operator):
 		url = f'{url}api/predict/'
 		headers = {
 			'X-API-KEY': f'{api_key}',
+			'X-Plugin-Token': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwbHVnaW5fdmVyc2lvbl9pZCI6IjhmZDNmZjk0LTRlYmQtNGFmOS04N2U3LThhZDdhOGEwYTRhNiJ9.f6CHpOF9Hh2Nyx71cRx2tFTebigLglNoRhQnbZVuHsE',
 			'Content-Type': 'application/json'
 		}
 		response = requests.post(url, headers=headers, json=data)
@@ -372,35 +373,29 @@ class ANYM_OT_fetch_animation(bpy.types.Operator):
 
 		headers = {
 			'X-API-KEY': f'{api_key}',
+			'X-Plugin-Token': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwbHVnaW5fdmVyc2lvbl9pZCI6IjhmZDNmZjk0LTRlYmQtNGFmOS04N2U3LThhZDdhOGEwYTRhNiJ9.f6CHpOF9Hh2Nyx71cRx2tFTebigLglNoRhQnbZVuHsE',
 			'Content-Type': 'application/json'
 		}
 
 		response = requests.get(f'{url}api/import-animation/', headers=headers)
 
 		if response.status_code == 200:
-			try:
-				dir = bpy.utils.extension_path_user(__package__, path='data')
-			except:
-				dir = os.path.join(os.path.dirname(__file__), 'data')
-
-			os.makedirs(dir, exist_ok=True)
-			filepath = os.path.join(dir, 'AnymOutput.bvh')
-
-			with open(filepath, 'w') as f:
-				f.write(response.json()['data'])
-
-			bpy.ops.import_anim.bvh(
-				filepath=filepath,
-				global_scale=1.,
-				axis_up='Z',
-				axis_forward='Y',
-				use_fps_scale=True,
+			import_pose(
+				response.json()['data']['animation'].split('MOTION')[1],
+				'AnymOutput',
+				False,
+				False,
+				'',
+				scale=1.0,
+				is_static=False,
+				frame_indices=sorted(set(response.json()['data']['keyframe_indices']) | {0, 1}),
 			)
+			
 		else:
 			try:
-				bpy.ops.anym.warning_window('INVOKE_DEFAULT', message=f"Error {status_code}: {output['error']}")
+				bpy.ops.anym.warning_window('INVOKE_DEFAULT', message=f"Error {response.status_code}: {response.json()['error']}")
 			except:
-				bpy.ops.anym.warning_window('INVOKE_DEFAULT', message=f"Error {status_code}: {output['message']}")
+				bpy.ops.anym.warning_window('INVOKE_DEFAULT', message=f"Error {response.status_code}: {response.json()['message']}")
 			return {'CANCELLED'}
 
 		return {'FINISHED'}

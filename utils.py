@@ -137,10 +137,7 @@ ROOT Hips
 	}
 }
 MOTION
-Frames: 1
-Frame Time: 0.050000
 """
-
 
 def is_anym_armature(self, object):
 	if object.type != 'ARMATURE':
@@ -148,7 +145,6 @@ def is_anym_armature(self, object):
 	if len(object.pose.bones) != 22:
 		return False
 	return True
-
 
 class BVHJointData:
 	def __init__(self, name, parent_data=None, is_end_site=False):
@@ -161,126 +157,6 @@ class BVHJointData:
 
 		self.rot_order = [None, None, None]
 		self.rot_order_str = 'XYZ'
-
-
-def parse_bvh_data(lines, scale=100):
-	_eul_order_lookup = {
-		(None, None, None): 'XYZ',
-		(0, 1, 2): 'XYZ',
-		(0, 2, 1): 'XZY',
-		(1, 0, 2): 'YXZ',
-		(1, 2, 0): 'YZX',
-		(2, 0, 1): 'ZXY',
-		(2, 1, 0): 'ZYX',
-	}
-
-	hierarchy_start_idx = -1
-	for i, line in enumerate(lines):
-		if line.strip() == "HIERARCHY":
-			hierarchy_start_idx = i
-			break
-
-	all_bvh_joints = {}
-	root_bvh_joint = None
-	current_parent_stack = []
-	ordered_channels_for_motion = []
-
-	line_idx = hierarchy_start_idx + 1
-	while line_idx < len(lines):
-		line = lines[line_idx].strip()
-		line_idx += 1
-
-		if not line: continue
-		if line == "MOTION": break
-
-		parts = line.split()
-		if not parts: continue
-
-		if parts[0] == "ROOT" or parts[0] == "JOINT":
-			joint_name = " ".join(parts[1:])
-			parent_joint_data = current_parent_stack[-1] if current_parent_stack else None
-			joint_data = BVHJointData(joint_name, parent_joint_data)
-			all_bvh_joints[joint_name] = joint_data
-
-			if parent_joint_data:
-				parent_joint_data.children.append(joint_data)
-			if parts[0] == "ROOT":
-				root_bvh_joint = joint_data
-
-			line_idx += 1
-			current_parent_stack.append(joint_data)
-
-		elif parts[0] == "OFFSET":
-			current_joint_data = current_parent_stack[-1]
-			current_joint_data.offset = Vector([
-				float(parts[1]) * scale,
-				float(parts[2]) * scale,
-				float(parts[3]) * scale,
-			])
-
-		elif parts[0] == "CHANNELS":
-			current_joint_data = current_parent_stack[-1]
-			num_channels = int(parts[1])
-			current_joint_data.channels = parts[2:2+num_channels]
-
-			rot_count = 0
-			for channel in current_joint_data.channels:
-				channel_lower = channel.lower()
-				if channel_lower == 'xrotation':
-					current_joint_data.rot_order[rot_count] = 0
-					rot_count += 1
-				elif channel_lower == 'yrotation':
-					current_joint_data.rot_order[rot_count] = 1
-					rot_count += 1
-				elif channel_lower == 'zrotation':
-					current_joint_data.rot_order[rot_count] = 2
-					rot_count += 1
-
-			current_joint_data.rot_order_str = _eul_order_lookup[tuple(current_joint_data.rot_order)]
-
-			for channel_type in current_joint_data.channels:
-				ordered_channels_for_motion.append((current_joint_data.name, channel_type))
-
-		elif parts[0] == "End" and parts[1] == "Site":
-			end_site_name = current_parent_stack[-1].name + "_EndSite"
-			parent_joint_data = current_parent_stack[-1]
-			end_site_data = BVHJointData(end_site_name, parent_joint_data, is_end_site=True)
-			all_bvh_joints[end_site_name] = end_site_data
-			parent_joint_data.children.append(end_site_data)
-			line_idx += 1
-
-			offset_parts = lines[line_idx].strip().split()
-			line_idx += 1
-
-			end_site_data.offset = Vector([
-				float(offset_parts[1]) * scale,
-				float(offset_parts[2]) * scale,
-				float(offset_parts[3]) * scale
-			])
-			line_idx += 1
-
-		elif parts[0] == "}":
-			if current_parent_stack:
-				current_parent_stack.pop()
-			else:
-				if line_idx < len(lines) and lines[line_idx].strip() == "MOTION":
-					break
-
-	motion_start_idx = -1
-	for i in range(line_idx - 1, len(lines)):
-		if lines[i].strip() == "MOTION":
-			motion_start_idx = i
-			break
-
-	frame_values = []
-
-	for i in range(motion_start_idx + 1, len(lines)):
-		line = lines[i].strip()
-		if line.startswith("Frames: 1"):
-			motion_data_line = lines[i+2].strip()
-			frame_values = [float(x) for x in motion_data_line.split()]
-
-	return root_bvh_joint, all_bvh_joints, ordered_channels_for_motion, frame_values
 
 def build_blender_hierarchy_recursive(bvh_joint_data, edit_bones, parent_blender_bone=None):
 	if bvh_joint_data.is_end_site:
@@ -805,80 +681,235 @@ def setup_fkik(armature_object, import_model=False):
 
 	return control_armature
 
+def get_hierarchy_from_header(header_str: str) -> str:
+	"""
+	Return only the HIERARCHY part of the BVH header,
+	stripping any MOTION / Frames / Frame Time lines.
+	"""
+	lines = header_str.splitlines()
+	out_lines = []
+	for line in lines:
+		if line.strip() == "MOTION":
+			break
+		out_lines.append(line)
+	return "\n".join(out_lines) + "\n"
 
-def import_pose(motion_string, name, fkik_enabled, import_model, model_path, scale=1.0):
-	base_name = f'{name}'
-	i = 0
-	while bpy.data.objects.get(name) != None:
-		name = base_name + f'.{i:03d}'
-		if i > 100:
+def parse_bvh_data(lines, scale=100):
+	_eul_order_lookup = {
+		(None, None, None): 'XYZ',
+		(0, 1, 2): 'XYZ',
+		(0, 2, 1): 'XZY',
+		(1, 0, 2): 'YXZ',
+		(1, 2, 0): 'YZX',
+		(2, 0, 1): 'ZXY',
+		(2, 1, 0): 'ZYX',
+	}
+
+	hierarchy_start_idx = -1
+	for i, line in enumerate(lines):
+		if line.strip() == "HIERARCHY":
+			hierarchy_start_idx = i
 			break
 
-	bvh_content_string = HEADER + motion_string
-	lines = bvh_content_string.splitlines()
-	root_bvh_joint, all_bvh_joints, ordered_channels_for_motion, frame_values = parse_bvh_data(lines, scale=scale)
+	all_bvh_joints = {}
+	root_bvh_joint = None
+	current_parent_stack = []
+	ordered_channels_for_motion = []
 
-	if import_model:
-		bpy.ops.import_scene.fbx(filepath=model_path, use_anim=False, ignore_leaf_bones=True)
+	line_idx = hierarchy_start_idx + 1
+	while line_idx < len(lines):
+		line = lines[line_idx].strip()
+		line_idx += 1
 
-		armature_object = bpy.data.objects.get("AnymArmature")
-		armature_object.name = name
-		armature_data = armature_object.data
+		if not line:
+			continue
+		if line == "MOTION":
+			break
 
-		armature_object.location.y = -.4
-		armature_object.location.z = .09
-		bpy.ops.object.transform_apply(location=True, rotation=True, scale=False)
+		parts = line.split()
+		if not parts:
+			continue
 
-		model = bpy.data.objects.get('AnymModel')
-		model.lock_location = (True, True, True)
-		model.lock_rotation = (True, True, True)
-		model.lock_scale = (True, True, True)
-		model.name += f'_{name}'
-	else:
-		armature_data = bpy.data.armatures.new("AnymArmature")
-		armature_object = bpy.data.objects.new(name, armature_data)
+		if parts[0] == "ROOT" or parts[0] == "JOINT":
+			joint_name = " ".join(parts[1:])
+			parent_joint_data = current_parent_stack[-1] if current_parent_stack else None
+			joint_data = BVHJointData(joint_name, parent_joint_data)
+			all_bvh_joints[joint_name] = joint_data
 
-		bpy.context.collection.objects.link(armature_object)
-		bpy.context.view_layer.objects.active = armature_object
+			if parent_joint_data:
+				parent_joint_data.children.append(joint_data)
+			if parts[0] == "ROOT":
+				root_bvh_joint = joint_data
 
-		bpy.ops.object.mode_set(mode='EDIT')
-		edit_bones = armature_data.edit_bones
+			# skip the next '{' line
+			line_idx += 1
+			current_parent_stack.append(joint_data)
 
-		build_blender_hierarchy_recursive(root_bvh_joint, edit_bones=edit_bones)
+		elif parts[0] == "OFFSET":
+			current_joint_data = current_parent_stack[-1]
+			current_joint_data.offset = Vector([
+				float(parts[1]) * scale,
+				float(parts[2]) * scale,
+				float(parts[3]) * scale,
+			])
 
-	bpy.ops.object.mode_set(mode='OBJECT')
+		elif parts[0] == "CHANNELS":
+			current_joint_data = current_parent_stack[-1]
+			num_channels = int(parts[1])
+			current_joint_data.channels = parts[2:2+num_channels]
 
-	bpy.context.view_layer.objects.active = armature_object
-	bpy.ops.object.mode_set(mode='POSE')
-	pose_bones = armature_object.pose.bones
+			rot_count = 0
+			for channel in current_joint_data.channels:
+				channel_lower = channel.lower()
+				if channel_lower == 'xrotation':
+					current_joint_data.rot_order[rot_count] = 0
+					rot_count += 1
+				elif channel_lower == 'yrotation':
+					current_joint_data.rot_order[rot_count] = 1
+					rot_count += 1
+				elif channel_lower == 'zrotation':
+					current_joint_data.rot_order[rot_count] = 2
+					rot_count += 1
 
+			current_joint_data.rot_order_str = _eul_order_lookup[tuple(current_joint_data.rot_order)]
+
+			for channel_type in current_joint_data.channels:
+				ordered_channels_for_motion.append((current_joint_data.name, channel_type))
+
+		elif parts[0] == "End" and parts[1] == "Site":
+			end_site_name = current_parent_stack[-1].name + "_EndSite"
+			parent_joint_data = current_parent_stack[-1]
+			end_site_data = BVHJointData(end_site_name, parent_joint_data, is_end_site=True)
+			all_bvh_joints[end_site_name] = end_site_data
+			parent_joint_data.children.append(end_site_data)
+			line_idx += 1
+
+			offset_parts = lines[line_idx].strip().split()
+			line_idx += 1
+
+			end_site_data.offset = Vector([
+				float(offset_parts[1]) * scale,
+				float(offset_parts[2]) * scale,
+				float(offset_parts[3]) * scale
+			])
+			line_idx += 1
+
+		elif parts[0] == "}":
+			if current_parent_stack:
+				current_parent_stack.pop()
+			else:
+				if line_idx < len(lines) and lines[line_idx].strip() == "MOTION":
+					break
+
+	motion_start_idx = -1
+	for i in range(line_idx - 1, len(lines)):
+		if lines[i].strip() == "MOTION":
+			motion_start_idx = i
+			break
+
+	motion_frames = []
+	frame_time = None
+	num_frames = None
+
+	if motion_start_idx != -1:
+		i = motion_start_idx + 1
+		# read Frames: and Frame Time:
+		while i < len(lines):
+			line = lines[i].strip()
+			if not line:
+				i += 1
+				continue
+
+			lower = line.lower()
+			if lower.startswith("frames:"):
+				try:
+					num_frames = int(line.split()[-1])
+				except ValueError:
+					num_frames = None
+				i += 1
+				continue
+
+			if lower.startswith("frame time:"):
+				try:
+					frame_time = float(line.split()[-1])
+				except ValueError:
+					frame_time = None
+				i += 1
+				break
+
+			i += 1
+
+		# now read motion data lines
+		while i < len(lines):
+			line = lines[i].strip()
+			i += 1
+			if not line:
+				continue
+
+			try:
+				values = [float(x) for x in line.split()]
+			except ValueError:
+				# non-numeric line – stop reading
+				break
+
+			motion_frames.append(values)
+			if num_frames is not None and len(motion_frames) >= num_frames:
+				break
+
+	# Backwards-compat fallback: if nothing parsed, give one empty frame
+	if not motion_frames:
+		motion_frames = [[]]
+	return root_bvh_joint, all_bvh_joints, ordered_channels_for_motion, motion_frames, frame_time
+
+def build_joint_motion_data(frame_values, ordered_channels_for_motion, import_model, scale):
 	joint_motion_data = {}
-	for joint_name in all_bvh_joints.keys():
-		joint_motion_data[joint_name] = {
-			'pos': Vector((0, 0, 0)),
-			'rot_x': 0.0, 'rot_y': 0.0, 'rot_z': 0.0
-		}
+
+	# initialize per joint
+	for joint_name, _ in ordered_channels_for_motion:
+		if joint_name not in joint_motion_data:
+			joint_motion_data[joint_name] = {
+				'pos': Vector((0, 0, 0)),
+				'rot_x': 0.0,
+				'rot_y': 0.0,
+				'rot_z': 0.0,
+			}
 
 	current_value_idx = 0
-	for joint_name, channel_type in ordered_channels_for_motion:
-		if current_value_idx >= len(frame_values):
-			break
+	total_channels = len(ordered_channels_for_motion)
+	max_values = min(len(frame_values), total_channels)
 
+	for idx in range(max_values):
+		joint_name, channel_type = ordered_channels_for_motion[idx]
 		value = frame_values[current_value_idx]
+		current_value_idx += 1
+
 		if 'position' in channel_type:
 			if import_model:
-				if channel_type == "Xposition": joint_motion_data[joint_name]['pos'].x = value * scale
-				elif channel_type == "Yposition": joint_motion_data[joint_name]['pos'].y = value * scale
-				elif channel_type == "Zposition": joint_motion_data[joint_name]['pos'].z = value * scale
+				if channel_type == "Xposition":
+					joint_motion_data[joint_name]['pos'].x = value * scale
+				elif channel_type == "Yposition":
+					joint_motion_data[joint_name]['pos'].y = value * scale
+				elif channel_type == "Zposition":
+					joint_motion_data[joint_name]['pos'].z = value * scale
 			else:
-				if channel_type == "Xposition": joint_motion_data[joint_name]['pos'].z = value * scale
-				elif channel_type == "Yposition": joint_motion_data[joint_name]['pos'].x = value * scale
-				elif channel_type == "Zposition": joint_motion_data[joint_name]['pos'].y = value * scale
-		elif channel_type == "Xrotation": joint_motion_data[joint_name]['rot_x'] = value
-		elif channel_type == "Yrotation": joint_motion_data[joint_name]['rot_y'] = value
-		elif channel_type == "Zrotation": joint_motion_data[joint_name]['rot_z'] = value
+				if channel_type == "Xposition":
+					joint_motion_data[joint_name]['pos'].x = value * scale
+				elif channel_type == "Yposition":
+					joint_motion_data[joint_name]['pos'].z = -value * scale
+				elif channel_type == "Zposition":
+					joint_motion_data[joint_name]['pos'].y = value * scale
 
-		current_value_idx += 1
+		elif channel_type == "Xrotation":
+			joint_motion_data[joint_name]['rot_x'] = value
+		elif channel_type == "Yrotation":
+			joint_motion_data[joint_name]['rot_y'] = value
+		elif channel_type == "Zrotation":
+			joint_motion_data[joint_name]['rot_z'] = value
+
+	return joint_motion_data
+
+def apply_pose_to_armature(armature_object, armature_data, all_bvh_joints, root_bvh_joint, joint_motion_data):
+	pose_bones = armature_object.pose.bones
 
 	for bvh_joint_name, bvh_joint_data in all_bvh_joints.items():
 		if bvh_joint_data.is_end_site:
@@ -892,7 +923,6 @@ def import_pose(motion_string, name, fkik_enabled, import_model, model_path, sca
 			continue
 
 		bvh_joint_data = all_bvh_joints[bvh_joint_name]
-
 		if bvh_joint_data.is_end_site:
 			continue
 
@@ -920,17 +950,168 @@ def import_pose(motion_string, name, fkik_enabled, import_model, model_path, sca
 			euler = Euler(bvh_rot, bvh_joint_data.rot_order_str[::-1])
 
 			bone_rotation_matrix = euler.to_matrix().to_4x4()
-
-			bone_rotation_matrix = (
-				bone_rest_matrix_inv @
-				bone_rotation_matrix @
-				bone_rest_matrix
-			)
+			bone_rotation_matrix = bone_rest_matrix_inv @ bone_rotation_matrix @ bone_rest_matrix
 
 			blender_bone.rotation_mode = 'QUATERNION'
 			blender_bone.rotation_quaternion = bone_rotation_matrix.to_quaternion()
 
+def import_pose(
+		motion_string,
+		name,
+		fkik_enabled,
+		import_model,
+		model_path,
+		scale=1.0,
+		is_static=True,
+		frame_indices=None,
+		frame_time=None,
+		start_frame=1
+	):
+	base_name = f'{name}'
+	i = 0
+	# ensure unique name
+	while bpy.data.objects.get(name) is not None:
+		i += 1
+		name = base_name + f'.{i:03d}'
+		if i > 100:
+			break
+
+	hierarchy_str = get_hierarchy_from_header(HEADER)
+
+	motion_lines = [l for l in motion_string.splitlines() if l.strip()]
+	num_frames_from_segment = len(motion_lines)
+	if num_frames_from_segment == 0:
+		raise ValueError("import_pose: motion_string contains no motion data lines")
+
+	# default frame_time if not provided
+	if frame_time is None:
+		frame_time = 0.05 
+
+	motion_header = f"MOTION\n"
+	bvh_content_string = hierarchy_str + motion_header + "\n".join(motion_lines) + "\n"
+
+	lines = bvh_content_string.splitlines()
+	root_bvh_joint, all_bvh_joints, ordered_channels_for_motion, motion_frames, parsed_frame_time = parse_bvh_data(lines, scale=scale)
+
+	if parsed_frame_time is not None:
+		frame_time = parsed_frame_time
+
+	if import_model:
+		bpy.ops.import_scene.fbx(filepath=model_path, use_anim=False, ignore_leaf_bones=True)
+
+		armature_object = bpy.data.objects.get("AnymArmature")
+		armature_object.name = name
+		armature_data = armature_object.data
+
+		armature_object.location.y = -.4
+		armature_object.location.z = .09
+		bpy.ops.object.transform_apply(location=True, rotation=True, scale=False)
+
+		model = bpy.data.objects.get('AnymModel')
+		model.lock_location = (True, True, True)
+		model.lock_rotation = (True, True, True)
+		model.lock_scale = (True, True, True)
+		model.name += f'_{name}'
+	else:
+		armature_data = bpy.data.armatures.new("AnymArmature")
+		armature_object = bpy.data.objects.new(name, armature_data)
+
+		bpy.context.collection.objects.link(armature_object)
+		bpy.context.view_layer.objects.active = armature_object
+
+		bpy.ops.object.mode_set(mode='EDIT')
+		edit_bones = armature_data.edit_bones
+		build_blender_hierarchy_recursive(root_bvh_joint, edit_bones=edit_bones)
+
 	bpy.ops.object.mode_set(mode='OBJECT')
+
+	bpy.context.view_layer.objects.active = armature_object
+	bpy.ops.object.mode_set(mode='POSE')
+
+	num_frames = len(motion_frames)
+
+	if is_static:
+		frame_values = motion_frames[0]
+		joint_motion_data = build_joint_motion_data(
+			frame_values,
+			ordered_channels_for_motion,
+			import_model,
+			scale
+		)
+		apply_pose_to_armature(
+			armature_object,
+			armature_data,
+			all_bvh_joints,
+			root_bvh_joint,
+			joint_motion_data
+		)
+
+		bpy.ops.object.mode_set(mode='OBJECT')
+
+	else:
+		scene = bpy.context.scene
+
+		# sanitise / default frame_indices
+		if frame_indices is None:
+			frame_indices = list(range(num_frames))
+		else:
+			frame_indices = sorted(set(i for i in frame_indices if 0 <= i < num_frames))
+			if not frame_indices:
+				frame_indices = list(range(num_frames))
+
+		armature_object.animation_data_create()
+
+		for idx in frame_indices:
+			scene.frame_set(start_frame + idx)
+
+			frame_values = motion_frames[idx]
+			joint_motion_data = build_joint_motion_data(
+				frame_values,
+				ordered_channels_for_motion,
+				import_model,
+				scale
+			)
+			apply_pose_to_armature(
+				armature_object,
+				armature_data,
+				all_bvh_joints,
+				root_bvh_joint,
+				joint_motion_data
+			)
+
+			pose_bones = armature_object.pose.bones
+
+			for bvh_joint_name, bvh_joint_data in all_bvh_joints.items():
+				if bvh_joint_data.is_end_site:
+					continue
+				blender_bone = pose_bones.get(bvh_joint_name)
+				if not blender_bone:
+					continue
+
+				if bvh_joint_name == root_bvh_joint.name:
+					blender_bone.keyframe_insert(
+						data_path="location",
+						group=bvh_joint_name
+					)
+
+				blender_bone.keyframe_insert(
+					data_path="rotation_quaternion",
+					group=bvh_joint_name
+				)
+
+		scene.frame_start = start_frame
+		scene.frame_end = start_frame + (max(frame_indices) if frame_indices else 0)
+
+		# enforce smooth interpolation
+		if armature_object.animation_data and armature_object.animation_data.action:
+			action = armature_object.animation_data.action
+			for fcurve in action.fcurves:
+				for kp in fcurve.keyframe_points:
+					kp.interpolation = 'BEZIER'
+					kp.handle_left_type = 'AUTO_CLAMPED'
+					kp.handle_right_type = 'AUTO_CLAMPED'
+
+		bpy.ops.object.mode_set(mode='OBJECT')
 
 	if fkik_enabled:
 		control_armature = setup_fkik(armature_object, import_model=import_model)
