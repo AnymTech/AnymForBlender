@@ -80,7 +80,7 @@ class ANYM_OT_warning(bpy.types.Operator):
 class ANYM_OT_import_armature(bpy.types.Operator):
 	bl_idname = "anym.import_armature"
 	bl_label = "Import Armature"
-	bl_description = "Import a built-in pose as an armature (dummy)"
+	bl_description = "Import a built-in pose as an armature"
 
 	@classmethod
 	def poll(cls, context):
@@ -145,7 +145,7 @@ class ANYM_OT_remove_pose(bpy.types.Operator):
 class ANYM_OT_generate_animation(bpy.types.Operator):
 	bl_idname = "anym.generate_animation"
 	bl_label = "Generate Animation"
-	bl_description = "Generate animation via API (dummy)"
+	bl_description = "Generate animation via API"
 
 	@classmethod
 	def poll(cls, context):
@@ -364,7 +364,7 @@ class ANYM_OT_generate_animation(bpy.types.Operator):
 class ANYM_OT_fetch_animation(bpy.types.Operator):
 	bl_idname = "anym.fetch_animation"
 	bl_label = "Fetch Animation"
-	bl_description = "Fetch exported animation from API (dummy)"
+	bl_description = "Fetch exported animation from API"
 
 	def execute(self, context):
 		scene = context.scene
@@ -391,6 +391,8 @@ class ANYM_OT_fetch_animation(bpy.types.Operator):
 				frame_indices=sorted(set(response.json()['data']['keyframe_indices']) | {0, 1}),
 			)
 			
+		elif response.status_code == 404:
+			bpy.ops.anym.warning_window('INVOKE_DEFAULT', message=f"Error {response.status_code}: No fetchable animation found. First click 'Generate Animation', then unlock it in the Anym previewer.")
 		else:
 			try:
 				bpy.ops.anym.warning_window('INVOKE_DEFAULT', message=f"Error {response.status_code}: {response.json()['error']}")
